@@ -1,0 +1,185 @@
+---
+title: "GumGumChallenge"
+author: "Christina Kestler"
+date: "February 18, 2016"
+output: pdf_document
+---
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r, echo=FALSE}
+install.packages("outliers",repos = "http://cran.us.r-project.org")
+install.packages("tsoutliers",repos = "http://cran.us.r-project.org")
+install.packages("ggplot2",repos = "http://cran.us.r-project.org")
+install.packages("Metrics",repos = "http://cran.us.r-project.org")
+install.packages("forecast",repos = "http://cran.us.r-project.org")
+library(forecast)
+library(Metrics)
+library(lmtest)
+library(timeSeries)
+library(tseries)
+library(ggplot2)
+library(outliers)
+library(tsoutliers)
+library(stats)
+library(Metrics)
+set.seed(123)
+
+train <- read.table("training")
+test <- read.table("validation")
+```
+I would like to have a column which indicates the days. Using this, instead of the index helps make the analysis slightly easier
+```{r}
+day <-seq(365)
+train <- cbind(train,day)
+```
+Lets look at a plot, histogram and summary of the data
+```{r}
+qplot(day, V1, data=train,geom="line",xlim=c(1,365), xlab="DAYS",ylab="AD IMPRESSIONS", main="Ad Impressions over 1 year")
+summary(train)
+hist(train[,1])
+```
+
+At first glance, there seems to be 1 or 2 unusually small obervations in the beginning, maybe 
+another unusually small observation in the middle, and possibly another unusually high observation in the middle. 
+Based on the surrounding days observations of these possible outliers, and the trend that is occuring 
+in those surrounding days, my guess is that the small obervations are a result of some kind of experiemntal error. 
+I would now like to perform a test to see if these would be considered official outliers. Based on the histogram, it looks like our data MAY follow a normal distribution, I would like to perform a short analysis to see if this is the case, as this will dictate which outlier test I use, among other things.
+```{r}
+qqnorm(train[,1]); qqline(train[,1])
+shapiro.test(train[,1])
+```
+Pvalue smaller than .01, reject the null. Data does not seem to follow a normal distribution. 
+Since this is a time series, I am going to use the tsoutliers package.
+```{r}
+tsoutliers(train[,1])
+```
+We have identified values in index 1 and 161 as outliers. Since my gut tells me these are
+results of experimental error, lets remove and replace based on the packages recommendations. 
+```{r}
+clean <- tsclean(train[,1], replace.missing=TRUE)
+train1 <-as.data.frame(cbind(clean, day))
+qplot(day, clean, data=train1,  geom="line",xlim=c(1,365), xlab="DAYS",ylab="AD IMPRESSIONS", main="Ad Impressions over 1 year")
+```
+
+That looks much better. I am going to try two models, an ARIMA and Neural Net for time series. First I will try an ARIMA model. 
+```{r}
+fitts <- auto.arima(train1[,1],stepwise=FALSE, trace=TRUE, max.order=20)
+fcastts <- forecast(fitts, h=30)
+mae(test[,1], as.numeric(fcastts$mean))     
+
+fitts
+
+final_forecast <-fcastts$mean
+```
+This variable holds the forecasts, now lets look at the plots of the forecasts and actual test set.
+```{r}
+pred.par <- par(mfrow=c(1, 1))
+plot(seq(366,395),test[,1], col='red', type='l', xlab="Day Number", ylab="Ad Impressions", main="Ad Impression Predictions: Time Series")
+lines(seq(366,395),final_forecast, col='green')
+legend(365,5.0e+07, c("Actual","Predicted"),lwd=c(1,1), col=c("Red","Green"))
+```
+
+Now I'm going to look at the neural network. I'm going to perform a grid search to examine the best parameters for my model,based on MAE. In order to minimize the output of the grid search, I am only going to print the results with the smaller MAE's.
+```{r}
+Pn = c(2,3,5,10,15,20)
+pn = c(2,3,8,16)
+rn = c(10,15,20)
+sn = c(1,2,3,4)
+ln = c(.1,.3,.9,1)
+
+mae_vec <- list()
+for (i in Pn){
+        for (j in pn){
+                for (k in rn){
+                        for (l in ln){
+                                for (s in sn){
+                                        fitt <- nnetar(train1[,1], P=i, p=j,size=s, repeats=k, lambda=l)
+                                        fcastnn <- forecast(fitt, h=30)
+                                        mae <- mae(test[,1], as.numeric(fcastnn$mean))
+                                        if (mae < 5000000) {
+                                                print(c(i,j,k,s,l,mae))
+                                        }}}}}}
+```
+The model with the lowest MAE was a nnetar(15,8,10,2,.3), where MAE = 4,592,128.1. This is clearly higher than the 
+ARIMA model, but I'm still going to continue with the anlysis. When looking at the histogram of the data,
+it had occurred to me that the data may benefit from a log or sqrt transformation because the distribution is right skewed, and the variance looks slightly unstable. Now that I have a model, I want to look at some plots to see if this would be the case.
+```{r}
+fit <- nnetar(train1[,1], P=15, p=8,size=10, repeats=2, lambda=.3)
+fit_log <- nnetar(log(train1[,1]), P=15, p=8,size=10, repeats=2, lambda=.3)
+fit_sqrt <- nnetar(sqrt(train1[,1]), P=15, p=8,size=10, repeats=2, lambda=.3)
+```
+
+Plots of the raw residuals for each transformation
+```{r}
+res.par <- par(mfrow=c(2, 2))
+plot(fit$residuals, col='grey')
+abline(h=0, col='red')
+plot(fit_log$residuals,col='grey')
+abline(h=0, col='green')
+plot(fit_sqrt$residuals,col='grey')
+abline(h=0, col='blue')
+par(res.par)
+```
+
+Histograms of the raw residuals for each transformation
+```{r}
+his.par <- par(mfrow=c(2, 2))
+hist(fit$residuals)
+hist(fit_log$residuals)
+hist(fit_sqrt$residuals)
+par(res.par)
+```
+
+Histograms of the residuals vs. fitted for each transformation
+```{r}
+fit_res.par <- par(mfrow=c(2, 2))
+plot(fit$fitted, fit$residuals, col='gray')
+abline(h=0, col='red')
+plot(fit_log$fitted, fit_log$residuals, col='gray')
+abline(h=0, col='green')
+plot(fit_sqrt$fitted, fit_sqrt$residuals, col='gray')
+abline(h=0, col='blue')
+par(fit_res.par)
+```
+
+qqplots for each transformation
+```{r}
+qq.par <- par(mfrow=c(2, 2))
+qqplot(fit$fitted, fit$residuals)
+qqplot(fit_log$fitted, fit_log$residuals)
+qqplot(fit_sqrt$fitted, fit_sqrt$residuals)
+par(qq.par)
+```
+
+I'm curious as to the means of the residuals
+```{r}
+mean(as.numeric(fit$residuals), na.rm=TRUE)         
+mean(as.numeric(fit_log$residuals), na.rm=TRUE)     
+mean(as.numeric(fit_sqrt$residuals), na.rm=TRUE)
+```
+With all transformations the plots seem to be very similar, except for the fitted vs. residual plots. 
+The raw residual data and the square root transform residuals seem to slightly cluster on the left hand side of the graph, which indicates a slightly unstable variance. Because of this, I'm going to choose to do a log transform of the data.
+```{r}
+fcast_nn <- forecast(fit_log, h=30)
+```
+This variable, nn_forecast, will show the predictions 
+```{r}
+forecast_nn <- exp(fcast_nn$mean)
+
+mae(test[,1], exp(fcast_nn$mean))
+
+```
+Plot of Predictions
+```{r}
+pred.par <- par(mfrow=c(1, 1))
+plot(seq(366,395),test[,1], col='red', type='l', xlab="Day Number", ylab="Ad Impressions", main="Ad Impression Predictions")
+lines(seq(366,395),forecast_nn, col='green')
+legend(366,5.0e+07, c("Actual","Predicted"),lwd=c(l,l), col=c("Red","Green"))
+```
+
+Clearly, the ARIMA model outperformed the Neural Net. I had a feeling it would after I saw the original MAE, but just wanted to take a stab at it. I think if I had a little more time, I could probably get the neural network working predicting almost as well as the ARIMA. Thank you for considering me as a canidate. Whether you choose me for an in person interview, or not, I truly enjoyed working on this project. I had not really used R in over a year, and I've never used RMarkdown. This assignment definately helped me build my chops back up. Thank you for reading, and I hope to hear from you soon!
+
+
